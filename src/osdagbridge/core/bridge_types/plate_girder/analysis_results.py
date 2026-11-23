@@ -1233,7 +1233,8 @@ class PlateGirderAnalysisResults:
                 nodes_e = ops.eleNodes(eid_e)
                 c_rb = "Vy_j" if n2_e == nodes_e[1] else "Vy_i"
 
-                ra = float(self.ds.sel(Loadcase=load_case, Element=eid_s, Component=c_ra)["forces"]) / 1000
+                # Element end forces act opposite to the vertical support reactions.
+                ra = -float(self.ds.sel(Loadcase=load_case, Element=eid_s, Component=c_ra)["forces"]) / 1000
                 rb = -float(self.ds.sel(Loadcase=load_case, Element=eid_e, Component=c_rb)["forces"]) / 1000
                 
                 rows.append({"Girder": g_name, "Ra (kN)": round(ra, 3), "Rb (kN)": round(rb, 3)})

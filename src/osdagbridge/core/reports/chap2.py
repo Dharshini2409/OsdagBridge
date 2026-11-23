@@ -1,5 +1,6 @@
 # Chapter 2: Input Parameters — exact LaTeX template match
 
+import math
 
 from osdagbridge.core.utils.common import (
     KEY_CARRIAGEWAY_WIDTH,
@@ -168,7 +169,7 @@ Where the user has modified additional inputs, those values are reported here. W
 \vspace{0.8cm}
 
 \begin{longtable}{|L{5.5cm}|p{10.0cm}|}
-\caption{\textbf{Typical Section Details}}
+\caption{\textbf{Typical Section Details}} \\
 \hline
 \textbf{parameter} & \textbf{value} \\
 \hline
@@ -191,7 +192,7 @@ Where the user has modified additional inputs, those values are reported here. W
 \vspace{0.8em}
 
 \begin{longtable}{|L{5.5cm}|p{10.0cm}|}
-\caption{\textbf{Components Details}}
+\caption{\textbf{Components Details}} \\
 \hline
 \textbf{parameter} & \textbf{value} \\
 \hline
@@ -240,17 +241,17 @@ def _girder_tables(input_dict, n_girders):
     # Helper: one girder-dimension row
     def _dim_row(g_lbl, i):
         return (g_lbl + r""" & """
-                + (_render_value(input_dict, f"{KEY_MP_GIRDER_DEPTH}.G{i}.M1", ' mm'))
+                + (_render_girder_dimension_mm(input_dict, f"{KEY_MP_GIRDER_DEPTH}.G{i}.M1"))
                 + r""" & """
-                + (_render_value(input_dict, f"{KEY_MP_GIRDER_WEB_THICKNESS}.G{i}.M1", ' mm'))
+                + (_render_girder_dimension_mm(input_dict, f"{KEY_MP_GIRDER_WEB_THICKNESS}.G{i}.M1"))
                 + r""" & """
-                + (_render_value(input_dict, f"{KEY_MP_GIRDER_TOP_FLANGE_WIDTH}.G{i}.M1", ' mm'))
+                + (_render_girder_dimension_mm(input_dict, f"{KEY_MP_GIRDER_TOP_FLANGE_WIDTH}.G{i}.M1"))
                 + ', '
-                + (_render_value(input_dict, f"{KEY_MP_GIRDER_TOP_FLANGE_THICKNESS}.G{i}.M1", ' mm'))
+                + (_render_girder_dimension_mm(input_dict, f"{KEY_MP_GIRDER_TOP_FLANGE_THICKNESS}.G{i}.M1"))
                 + r""" & """
-                + (_render_value(input_dict, f"{KEY_MP_GIRDER_BOTTOM_FLANGE_WIDTH}.G{i}.M1", ' mm'))
+                + (_render_girder_dimension_mm(input_dict, f"{KEY_MP_GIRDER_BOTTOM_FLANGE_WIDTH}.G{i}.M1"))
                 + ', '
-                + (_render_value(input_dict, f"{KEY_MP_GIRDER_BOTTOM_FLANGE_THICKNESS}.G{i}.M1", ' mm'))
+                + (_render_girder_dimension_mm(input_dict, f"{KEY_MP_GIRDER_BOTTOM_FLANGE_THICKNESS}.G{i}.M1"))
                 + r""" \\[8pt]
 \hline
 """)
@@ -305,7 +306,7 @@ def _girder_tables(input_dict, n_girders):
             
 \vspace{4pt}
 \begin{longtable}{|L{2.2cm}|L{1.8cm}|p{3.8cm}|p{3.8cm}|p{3.8cm}|}
-\caption{\textbf{Girder General Information}}
+\caption{\textbf{Girder General Information}} \\
 \hline
 \textbf{Girder} & \textbf{Member ID} & \textbf{Design Mode} & \textbf{Girder Type} & \textbf{Girder Symmetry} \\[6pt]
 \hline
@@ -317,7 +318,7 @@ def _girder_tables(input_dict, n_girders):
 
 \vspace{4pt}
 \begin{longtable}{|L{1.8cm}|L{2.3cm}|L{1.8cm}|p{4.8cm}|p{4.8cm}|}
-\caption{\textbf{Girder Section Dimensions}}
+\caption{\textbf{Girder Section Dimensions}} \\
 \hline
 \textbf{Girder} & \textbf{Total Depth, D (mm)} & \textbf{Web, $t_w$ (mm)} & \textbf{Top Flange (b\textsubscript{tf}, t\textsubscript{tf}) mm} & \textbf{Bottom Flange (b\textsubscript{bf}, t\textsubscript{bf}) mm} \\[6pt]
 \hline
@@ -329,7 +330,7 @@ def _girder_tables(input_dict, n_girders):
 
 \vspace{4pt}
 \begin{longtable}{|L{1.4cm}|p{2.2cm}|p{2.2cm}|p{3.0cm}|p{2.4cm}|p{2.2cm}|}
-\caption{\textbf{Girder Restraint and Stiffener Details}}\\
+\caption{\textbf{Girder Restraint and Stiffener Details}} \\
 \hline
 \textbf{Girder} & \textbf{Torsional / Warping Restraint} & \textbf{Web Philosophy} & \textbf{Intermediate Stiffeners} & \textbf{Longitudinal Stiffeners} & \textbf{Bearing Stiffener} \\[6pt]
 \hline
@@ -342,12 +343,37 @@ def _girder_tables(input_dict, n_girders):
 """)
 
 
+def _render_girder_dimension_mm(input_dict, key):
+    """Render a girder dimension stored in SI metres as millimetres."""
+    value = input_dict.get(key)
+    if value in ("", None):
+        return ""
+    try:
+        dimension_mm = float(value) * 1000.0
+    except (TypeError, ValueError):
+        return _render_value(input_dict, key)
+    if not math.isfinite(dimension_mm):
+        return _render_value(input_dict, key)
+    return _tex(f"{dimension_mm:.12g}") + " mm"
+
+
 def _bracing_tables(input_dict, n_girders):
     n = n_girders if n_girders >= 2 else 2
+
+    def _render_member_ids(key):
+        value = input_dict.get(key)
+        if value in ("", None):
+            return _render_value(input_dict, key)
+        text = str(value).strip()
+        first, separator, last = text.partition(" to ")
+        if separator and first.strip() == last.strip():
+            return _tex(first.strip())
+        return _render_value(input_dict, key)
+
     panels = [
         (
             _render_value(input_dict, f"{KEY_MP_CB_SELECT_GIRDERS}.G{i}G{i+1}.B{i}M1"),
-            _render_value(input_dict, f"{KEY_MP_CB_MEMBER_ID}.G{i}G{i+1}.B{i}M1"),
+            _render_member_ids(f"{KEY_MP_CB_MEMBER_ID}.G{i}G{i+1}.B{i}M1"),
             _render_value(input_dict, f"{KEY_MP_ED_SELECT_GIRDERS}.G{i}G{i+1}.E{i}M1"),
             _render_value(input_dict, f"{KEY_MP_ED_MEMBER_ID}.G{i}G{i+1}.E{i}M1"),
             i
@@ -389,13 +415,14 @@ def _bracing_tables(input_dict, n_girders):
 \setlength\LTright{\fill}
 
 \begin{longtable}{|L{2.2cm}|L{2.2cm}|L{3.0cm}|L{2.5cm}|C{1.8cm}|C{1.8cm}|}
-\caption{\textbf{Member Properties: Cross Bracing Details}}
+\caption{\textbf{Member Properties: Cross Bracing Details}} \\
 \hline
-\textbf{Location} & \textbf{Member IDs} & \textbf{Type of Bracing} & \textbf{Bracing Section} & \textbf{Spacing (m)} \\
+\textbf{Location} & \textbf{Member IDs} & \textbf{Type of Bracing} & \textbf{Input Section} & \textbf{Spacing (m)} \\
 \hline
 """
 + cb_rows
 + r"""\end{longtable}
+\noindent\textit{Input sections are shown above; sections used in design checks are reported in Chapter 5.}
 
 \vspace{0.4em}
 \noindent
@@ -404,7 +431,7 @@ def _bracing_tables(input_dict, n_girders):
 \setlength\LTright{\fill}
 
 \begin{longtable}{|L{2.2cm}|L{2.2cm}|L{3.0cm}|L{2.5cm}|C{1.8cm}|C{1.8cm}|}
-\caption{\textbf{Member Properties: End Diaphragm Details}}
+\caption{\textbf{Member Properties: End Diaphragm Details}} \\
 \hline
 \textbf{Location} & \textbf{Member IDs} & \textbf{Type of Bracing} & \textbf{Bracing Section} \\
 \hline
@@ -424,7 +451,7 @@ def _shear_connector_table(input_dict, output_dict=None):
 
 \vspace{0.4em}
 \begin{longtable}{|L{5.5cm}|p{10.0cm}|}
-\caption{\textbf{Shear Connector Details}}
+\caption{\textbf{Shear Connector Details}} \\
 \hline
 \textbf{parameter} & \textbf{value} \\
 \hline
@@ -452,7 +479,7 @@ def _safety_factors_table(input_dict):
 
 \vspace{0.4em}
 \begin{longtable}{|L{5.5cm}|p{10.0cm}|}
-\caption{\textbf{Partial Safety Factors}}
+\caption{\textbf{Partial Safety Factors}} \\
 \hline
 \textbf{parameter} & \textbf{value} \\
 \hline

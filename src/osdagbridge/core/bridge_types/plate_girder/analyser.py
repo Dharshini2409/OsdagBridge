@@ -90,6 +90,8 @@ class BridgeGrillageModel:
         # -------------------- LIVE LOAD --------------------
         self.vehicle_moving_loads_by_case: dict = {}  # {case_num: [vehicle, ...]}
         self.vehicle_type_map: dict = {}              # {id(vehicle): vehicle_type_str}
+        self.fatigue_vehicle = None
+        self.fatigue_moving_load_case = None
 
         # self.geometry = GeometryDefinitions(self.L, self.w, self.model)
 
@@ -1301,6 +1303,8 @@ class BridgeGrillageModel:
         return {
             "EQ_X": EQ_X, "EQ_Z": EQ_Z, "EQ_Y": EQ_Y,
             "EQ_a": combo_cases[0], "EQ_b": combo_cases[1], "EQ_c": combo_cases[2],
+            KEY_EL_LONGITUDINAL_SEISMIC_FORCE: Feq_X_kN,
+            KEY_EL_TRANSVERSE_SEISMIC_FORCE: Feq_Z_kN,
         }
 
     # ============================================================
@@ -1507,7 +1511,15 @@ class BridgeGrillageModel:
         model.add_load_case(WL, load_factor=partial_safety_factor)
         self.wind_load_case = WL
 
-        return {"WL_T": WL_T, "WL_L": WL_L, "WL_V": WL_V, "WL": WL}
+        return {
+            "WL_T": WL_T,
+            "WL_L": WL_L,
+            "WL_V": WL_V,
+            "WL": WL,
+            KEY_WL_TRANSVERSE_WIND_FORCE: FT_total / 1000,
+            KEY_WL_LONGITUDINAL_WIND_FORCE: FL_per_m2 * deck_area / 1000,
+            KEY_WL_VERTICAL_WIND_FORCE: FV_per_m2 * deck_area / 1000,
+        }
 
     # ============================================================
     #   Dead Load Combination
@@ -1867,6 +1879,95 @@ class BridgeGrillageModel:
             return float(max(data['x']))
         except Exception:
             return 25.0
+
+    def create_fatigue_vehicle(self):
+        """
+        Create the isolated IRC 6:2017 Clause 204.6 fatigue truck.
+
+        The truck geometry and axle loads come from
+        IRC6_2017.cl_204_6_fatigue_load().  Each axle load is split equally
+        between the two IRC wheel-track positions.
+
+        Temporary Stage 1 placement: z=4.250 m is the carriageway-centre
+        reference line for the currently generated layout with its current
+        0.5 m left/right crash-barrier geometry.  This is not yet a general
+        transverse-coordinate solution for arbitrary bridge layouts.
+        """
+        fatigue_data = IRC6_2017.cl_204_6_fatigue_load()
+        fatigue_vehicle = og.create_compound_load(name="Fatigue Vehicle")
+
+        for axle_x, axle_load in zip(fatigue_data["x"], fatigue_data["wheel_loads"]):
+            wheel_load = axle_load / 2
+            for wheel_z in fatigue_data["z"]:
+                wheel = og.create_load(
+                    loadtype="point",
+                    name="Fatigue wheel",
+                    point1=og.create_load_vertex(
+                        x=axle_x,
+                        z=wheel_z,
+                        p=wheel_load,
+                    ),
+                )
+                fatigue_vehicle.add_load(load=wheel)
+
+        fatigue_vehicle.set_global_coord(
+            og.Point(0.0, 0.0, 4.250)
+        )
+        return fatigue_vehicle
+
+    @staticmethod
+    def is_fatigue_vehicle_enabled(input_dict: dict) -> bool:
+        fatigue_input = input_dict.get(KEY_LL_IRC_CLASS_FATIGUE, False)
+        if isinstance(fatigue_input, str):
+            return fatigue_input.strip().lower() in ("true", "1", "yes", "on")
+        return bool(fatigue_input)
+
+    def create_fatigue_moving_load_case(
+            self,
+            model=None,
+            span=None,
+            enabled=True,
+    ):
+        """
+        Create a separate moving-load case for the IRC fatigue truck.
+
+        This case is not added to the ordinary Class A/70R vehicle collections
+        or combinations.  The path extent is based on the fatigue truck's actual
+        5.9 m axle span.
+        """
+        model = model or self.model
+        if model is None:
+            raise ValueError("Model not created yet.")
+
+        if not enabled:
+            self.fatigue_moving_load_case = None
+            self.fatigue_vehicle = None
+            return None
+
+        span = span or self.L
+        fatigue_data = IRC6_2017.cl_204_6_fatigue_load()
+        fatigue_truck_axle_span = float(max(fatigue_data["x"]) - min(fatigue_data["x"]))
+
+        fatigue_vehicle = self.create_fatigue_vehicle()
+        start = og.create_point(
+            x=-fatigue_truck_axle_span,
+            y=0.0,
+            z=0.0,
+        )
+        end = og.Point(span + fatigue_truck_axle_span, 0.0, 0.0)
+        moving_path = og.create_moving_path(
+            start_point=start,
+            end_point=end,
+        )
+
+        moving_load = og.create_moving_load(name="Moving Fatigue Vehicle")
+        moving_load.set_path(moving_path)
+        moving_load.add_load(fatigue_vehicle)
+
+        model.add_load_case(moving_load)
+        self.fatigue_vehicle = fatigue_vehicle
+        self.fatigue_moving_load_case = moving_load
+        return moving_load
 
     def create_moving_vehicle_load_cases(
             self,

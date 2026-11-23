@@ -22,7 +22,7 @@ def ch6_drawings(fig_paths):
     """
 
     def _sec_fig(path, title, label=None):
-        """Figure block: image first, numbered below. Placeholder if no path."""
+        """Figure block: embed a captured CAD image or explain its absence."""
         label_tex = (r'\label{' + label + '}\n') if label else ''
         if path:
             p = path.replace('\\', '/')
@@ -37,7 +37,7 @@ def ch6_drawings(fig_paths):
         return (r'\begin{figure}[H]' + '\n'
                 r'\centering' + '\n'
                 r'\fbox{\parbox{0.97\textwidth}{' + '\n'
-                r'\textit{[ PLACEHOLDER: ' + ' ' + title + r' ]}' + '\n'
+                r'\textit{CAD source unavailable for this report: ' + title + r'}' + '\n'
                 r'}}' + '\n'
                 r'\caption{' + title + '}\n'
                 + label_tex
@@ -58,7 +58,9 @@ def ch6_drawings(fig_paths):
             p = path.replace('\\', '/')
             body = r'\includegraphics[width=\linewidth]{' + p + '}'
         else:
-            body = r'\fbox{\parbox{0.95\linewidth}{\centering\textit{[ ' + title + r' ]}}}'
+            body = (r'\fbox{\parbox{0.95\linewidth}{\centering\textit{'
+                    + 'CAD source unavailable for this report: ' + title
+                    + r'}}}')
         return (r'\begin{minipage}[t]{0.31\textwidth}' + '\n'
                 r'\centering' + '\n'
                 + body + '\n'
@@ -126,7 +128,7 @@ def ch6_drawings(fig_paths):
 \chapter{Drawings and Visualizations}
 \label{ch:drawings}
 
-This section presents CAD-generated views of the designed bridge and its components. All views are generated automatically by OsdagBridge using pythonOCC.
+This section presents CAD-generated views captured from the active bridge design when available. Any unavailable view is identified explicitly; no drawing is synthesized for the report.
 
 \section{Bridge Configuration and Layout}
 \label{sec:bridge-layout}

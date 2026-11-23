@@ -54,50 +54,14 @@
 #==============================================================================
 #   FLOW OF REPORT GENERATION
 # ─────────────────────────────────────────────────────────────────────────────
-# USER CLICKS "Generate Report" button
-#        │
-#        ▼
-#[output_dock.py] OutputDock._on_report_clicked()
-#        │  traverses UI tree to locate `cad_generator` widget
-#        └──► [template_page.py] CustomWindow.open_report_dialog(cad_generator)
-#                    │
-#                    ├── ReportOptionsDialog(parent=self).exec()
-#                    │         [report_options.py — user fills form]
-#                    │         └── returns request (ReportRequest dataclass)
-#                    │
-#                    ├── Spawns background thread: _ReportWorker(backend, request, cad_generator)
-#                    │
-#                    └──► [template_page.py] _ReportWorker.run()
-#                                │
-#                                └──► [plategirderbridge.py] PlateGirderBridge.generate_design_report(request, cad_generator)
-#                                            │
-#                                            ├── self.input_dict.copy() → report_inputs
-#                                            ├── dict(self.output_dict) → output_dict
-#                                            │
-#                                            ├──► [report_generator.py] build_report_payload(request, report_inputs, output_dict)
-#                                            │           └── returns ReportPayload dataclass
-#                                            │
-#                                            ├── self._export_cad_figures(cad_generator)
-#                                            │    └── exports 4 headless views to ResourceFiles/Images
-#                                            │    └── wires paths onto payload.figures (girder_3d, etc.)
-#                                            │
-#                                            ├── self.build_figure_grillage() → grillage_fig (matplotlib)
-#                                            ├── self.figure_to_bytes(grillage_fig) → grillage_bytes
-#                                            ├──► [report_generator.py] export_grillage_figure(grillage_bytes, output_dir, file_stem)
-#                                            │           └── writes grillage.png → payload.figures.grillage = path
-#                                            │
-#                                            └──► [report_generator.py] generate_report(payload, request)
-#                                                        │
-#                                                        ├── OsdagLatexEnv() → discovers pdflatex binary
-#                                                        ├── Creates output_dir/assets/
-#                                                        ├── Copies logos & payload figures → assets/
-#                                                        ├── Calls 10 chapter functions → full_tex string
-#                                                        ├── Writes full_tex to tempdir/stem.tex
-#                                                        ├── subprocess.run(pdflatex) × 2 passes
-#                                                        ├── shutil.copy2(tmp_pdf → output_dir/stem.pdf)
-#                                                        └── returns ReportResult(pdf_path, tex_path)
-#                                                                  │
-#                                                                  ▼
+# USER CLICKS "Generate Report"
+#   OutputDock captures available CAD/analysis figures as bytes on the UI thread.
+#   CustomWindow passes those bytes to PlateGirderBridge.generate_design_report().
+#   That method copies them into ReportPayload.figure_data; generate_report()
+#   writes supplied images to a temporary directory, builds the chapter LaTeX,
+#   compiles twice, and copies a successful PDF/TeX result to the output folder.
+#   Headless report generation has no UI figure bytes, so unavailable-source
+#   notices are emitted rather than synthesized CAD or analysis images.
 #                                                      [template_page.py] _on_report_finished()
 #                                                          if dialog.is_preview → os.startfile(pdf_path)
 #                                                          else → CustomMessageBox("Report Saved")
@@ -109,6 +73,9 @@ from typing import Optional, List, Literal
 
 from osdagbridge.core.utils.common import (
     KEY_DESIGN_MODE,
+    KEY_MP_ED_BOTTOM_CHORD_SECTION_DESIG,
+    KEY_MP_ED_BRACING_SECTION_DESIGNATION,
+    KEY_MP_ED_TOP_CHORD_SECTION_DESIG,
     KEY_SPAN,
     KEY_TL_BRIDGE_TEMP_MAX,
     KEY_TL_BRIDGE_TEMP_MIN,
@@ -118,7 +85,7 @@ from osdagbridge.core.utils.common import (
     KEY_TL_TEMP_RISE
 )
 
-from osdagbridge.core.reports.report_utils import _tex
+from osdagbridge.core.reports.report_utils import _tex, repeat_longtable_headers
 from .executive_summary import executive_summary
 from .chap1 import ch1_project_info
 from .chap2 import ch2_input_parameters
@@ -129,6 +96,8 @@ from .chap6 import ch6_drawings
 from .chap7 import ch7_quantities
 from .chap8 import ch8_design_log
 from .chap9 import references
+from .charts import material_quantity_chart, utilization_ratio_chart
+from .styles import PAGE_MARGIN_IN, report_styles, toc_styles
 
 logger = logging.getLogger(__name__)
 
@@ -155,8 +124,7 @@ def preamble(project_name, job_number, report_date, report_version='Rev 0'):
     return r"""
 \documentclass[12pt,a4paper]{report}
 
-% Packages
-\usepackage[a4paper, margin=1in]{geometry}
+\usepackage[a4paper, margin=""" + str(PAGE_MARGIN_IN) + r"""in]{geometry}
 \usepackage{graphicx}
 \usepackage{amsmath}
 \usepackage{amssymb}
@@ -189,86 +157,7 @@ def preamble(project_name, job_number, report_date, report_version='Rev 0'):
 \usepackage{makecell}
 \usepackage{etoolbox}
 \usepackage{needspace}
-
-\numberwithin{table}{chapter}
-\numberwithin{figure}{chapter}
-% Table layout and spacing: consistent padding, row height, and longtable pre/post skips
-\setlength{\tabcolsep}{6pt}
-\renewcommand{\arraystretch}{1.12}
-\setlength{\LTpre}{0pt}
-\setlength{\LTpost}{6pt}
-% Table rules (outline thickness) and small extra row height for clarity
-\setlength{\arrayrulewidth}{0.5pt}
-\setlength{\extrarowheight}{0.6pt}
-
-% Prevent tables from overflowing past the page bottom:
-% if fewer than 5 baseline-skips remain, break to the next page first.
-\BeforeBeginEnvironment{table}{\needspace{5\baselineskip}}
-\BeforeBeginEnvironment{longtable}{\needspace{5\baselineskip}}
-
-\definecolor{osdagGreen}{HTML}{91B014}
-
-\fancypagestyle{main}{
-  \fancyhf{}
-  \fancyhead[L]{""" + pn + r""" $|$ """ + jn + r"""}
-  \fancyhead[R]{""" + rd + r""" $|$ """ + rv + r"""}
-  \fancyfoot[L]{Osdag $|$ FOSSEE $|$ Indian Institute of Technology Bombay}
-  \fancyfoot[R]{Page \thepage\ of \pageref{LastPage}}
-  \renewcommand{\headrule}{\color{osdagGreen}\hrule width\headwidth height 1pt \vspace{2pt}}
-  \renewcommand{\footrule}{%
-    \ifbool{hasSDonPage}{%
-      \vspace{-20pt}%
-      \hbox to \headwidth{\textcolor{black}{\footnotesize\textit{* Software default value}}\hfil}%
-      \vspace{4pt}%
-    }{%
-      \vspace{-8pt}%
-    }%
-    \color{osdagGreen}\hrule width\headwidth height 1pt \vspace{6pt}%
-  }
-}
-\fancypagestyle{plain}{
-  \fancyhf{}
-  \fancyhead[L]{""" + pn + r""" $|$ """ + jn + r"""}
-  \fancyhead[R]{""" + rd + r""" $|$ """ + rv + r"""}
-  \fancyfoot[L]{Osdag $|$ FOSSEE $|$ Indian Institute of Technology Bombay}
-  \fancyfoot[R]{Page \thepage\ of \pageref{LastPage}}
-  \renewcommand{\headrule}{\color{osdagGreen}\hrule width\headwidth height 1pt \vspace{2pt}}
-  \renewcommand{\footrule}{%
-    \ifbool{hasSDonPage}{%
-      \vspace{-20pt}%
-      \hbox to \headwidth{\textcolor{black}{\footnotesize\textit{* Software default value}}\hfil}%
-      \vspace{4pt}%
-    }{%
-      \vspace{-8pt}%
-    }%
-    \color{osdagGreen}\hrule width\headwidth height 1pt \vspace{6pt}%
-  }
-}
-\fancypagestyle{firstpage}{
-  \fancyhf{}
-  \renewcommand{\headrulewidth}{0pt}
-  \fancyfoot[L]{Osdag $|$ FOSSEE $|$ Indian Institute of Technology Bombay}
-  \fancyfoot[R]{Page \thepage\ of \pageref{LastPage}}
-  \renewcommand{\footrule}{\vspace{-8pt}\color{osdagGreen}\hrule width\headwidth height 1pt \vspace{6pt}}
-}
-\pagestyle{main}
-\setstretch{1.15}
-
-% Custom Commands
-\newcommand{\placeholder}[1]{\textit{\textless #1\textgreater}}
-\newcommand{\todo}[1]{\colorbox{yellow}{TODO: #1}}
-\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
-\newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
-\newcolumntype{R}[1]{>{\raggedleft\arraybackslash}p{#1}}
-
-% Software-default asterisk
-\newcommand{\sdstar}{\textsuperscript{*}}
-\newbool{hasSDonPage}
-\boolfalse{hasSDonPage}
-\newcommand{\markSD}{\global\booltrue{hasSDonPage}}
-\renewcommand{\sdstar}{\textsuperscript{*}\markSD{}}
-\AddToHook{shipout/before}{\global\boolfalse{hasSDonPage}}
-
+""" + report_styles(pn, jn, rd, rv) + r"""
 \title{\Large\textbf{OsdagBridge} \\ \normalsize Open Source Software for Steel Girder Bridge Design \\ \vspace{2cm} \large Design Report}
 \author{}
 \date{}
@@ -332,7 +221,7 @@ def title_page(m, osdag_logo, org_logo):
 \hline
 \textbf{Date} & """ + _tex(m.report_date) + r""" \\
 \hline
-\textbf{Report Version} & """ + (_tex(m.subtitle) if m.subtitle else '') + r""" \\
+\textbf{Report Version} & """ + _tex(m.subtitle or 'Rev 0') + r""" \\
 \hline
 \end{tabular}
 \end{titlepage}
@@ -344,32 +233,7 @@ def title_page(m, osdag_logo, org_logo):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def toc_section():
-    return r"""
-% Chapter / TOC Formatting
-\titleformat{\chapter}[block]
-  {\normalfont\Large\bfseries\centering}{\thechapter}{1em}{}
-\titlespacing*{\chapter}{0pt}{0pt}{10pt}
-\setcounter{tocdepth}{2}
-
-% TOC styling using titletoc
-\titlecontents{chapter}[1.5em]
-  {\normalfont\vspace{2pt}}
-  {\contentslabel{1.5em}}
-  {\hspace*{-1.5em}}
-  {\hfill\contentspage}
-
-\titlecontents{section}[3.8em]
-  {\normalfont}
-  {\contentslabel{2.3em}}
-  {\hspace*{-2.3em}}
-  {\hfill\contentspage}
-
-\titlecontents{subsection}[7.0em]
-  {\normalfont}
-  {\contentslabel{3.2em}}
-  {\hspace*{-3.2em}}
-  {\hfill\contentspage}
-
+    return toc_styles() + r"""
 \newpage
 \renewcommand{\contentsname}{\centering\Large\bfseries Table of Contents}
 \tableofcontents
@@ -633,6 +497,100 @@ class ReportDataBridge:
         except Exception:
             return ""
 
+    # =====================================================================
+    # CHAPTER 5: END DIAPHRAGMS
+    # =====================================================================
+
+    def _ed_forces_dict(self) -> dict:
+        return self.output_dict.get("end_diaphragm_forces_dict", {}) or {}
+
+    def _ed_pair_designs(self) -> dict:
+        return self.output_dict.get("end_diaphragm_design_results", {}) or {}
+
+    def _ed_osdag(self, pair: str, member: str, force_type: str) -> dict:
+        from osdagbridge.core.bridge_types.plate_girder.results_data import (
+            _extract_osdag_summary,
+        )
+        try:
+            raw = self._ed_pair_designs()[pair][member][force_type]
+            return _extract_osdag_summary(raw or {})
+        except (KeyError, TypeError):
+            return {}
+
+    def get_ed_pairs(self) -> list:
+        pairs = self._ed_forces_dict().get("pairs", {})
+        return sorted(pairs) if isinstance(pairs, dict) else []
+
+    def get_ed_force_value(self, pair: str, member: str, force_type: str):
+        prefix = "diag" if member == "diagonal" else "chord"
+        return self._ed_forces_dict().get("pairs", {}).get(pair, {}).get(
+            f"{prefix}_{force_type}_kN"
+        )
+
+    def get_ed_governing_force(self, pair: str, member: str) -> tuple:
+        candidates = []
+        for force_type in ("tension", "compression"):
+            value = self.get_ed_force_value(pair, member, force_type)
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                continue
+            candidates.append((abs(numeric_value), numeric_value, force_type))
+        if not candidates:
+            return "", "compression"
+        _, value, force_type = max(candidates)
+        return f"{value:.3f}", force_type
+
+    def get_ed_member_summary(self, pair: str, member: str, force_type: str) -> dict:
+        return self._ed_osdag(pair, member, force_type)
+
+    def get_ed_effective_length(self, pair: str, member: str, force_type: str):
+        try:
+            return self._ed_pair_designs()[pair][member][force_type].get(
+                "Member.Length"
+            )
+        except (KeyError, AttributeError, TypeError):
+            return None
+
+    def get_ed_gov_lc(self, pair: str, member: str, force_type: str) -> str:
+        prefix = "diag" if member == "diagonal" else "chord"
+        value = self._ed_forces_dict().get("pairs", {}).get(pair, {}).get(
+            f"{prefix}_{force_type}_gov_lc"
+        )
+        return _tex(value) if value else ""
+
+    def get_ed_section_property(self, pair: str, member: str, property_name: str):
+        pair_id = pair.replace("-", "")
+        if member == "diagonal":
+            sections = ("end_diaphragm",)
+        else:
+            sections = ("bottom_chord", "top_chord")
+        for section in sections:
+            key = (
+                "transverse_member_design.ed.section_properties."
+                f"{section}.{pair_id}.{property_name}"
+            )
+            value = self.output_dict.get(key)
+            if value is not None:
+                return value
+        return None
+
+    def get_ed_section_designation(self, pair: str, member: str) -> str:
+        pair_id = pair.replace("-", "")
+        if member == "diagonal":
+            key = f"{KEY_MP_ED_BRACING_SECTION_DESIGNATION}.{pair_id}"
+        else:
+            key = f"{KEY_MP_ED_BOTTOM_CHORD_SECTION_DESIG}.{pair_id}"
+            value = self.output_dict.get(key)
+            if value is None:
+                key = f"{KEY_MP_ED_TOP_CHORD_SECTION_DESIG}.{pair_id}"
+        value = self.output_dict.get(key)
+        return _tex(value) if value else ""
+
+    def get_ed_connection(self, pair: str, member: str, force_type: str) -> str:
+        value = self._ed_osdag(pair, member, force_type).get("connection")
+        return str(value) if value else ""
+
 def _format_project_location(pl_data):
     if not pl_data:
         return ''
@@ -683,6 +641,8 @@ def _format_project_location(pl_data):
 # ---------------------------------------------------------------------------
 
 def build_report_payload(request, input_dict, output_dict):
+    if not input_dict:
+        raise ValueError("Cannot build report payload: input_dict is empty. Run design first.")
     try:
         rd  = request.metadata.report_date or datetime.date.today().isoformat()
         lp  = request.metadata.logo_path
@@ -793,12 +753,8 @@ def build_report_payload(request, input_dict, output_dict):
                              output_dict=output_dict or {})
 
     except Exception as exc:
-        logger.warning("build_report_payload error: %s", exc)
-        return ReportPayload(
-            metadata=request.metadata, options=request.options,
-            inputs={}, analysis_summary={}, design_checks=[],
-            figures=ReportFigures(), log_entries=[],
-            output_dict={})
+        logger.error("build_report_payload error: %s", exc, exc_info=True)
+        raise RuntimeError(f"Failed to build report payload: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -860,9 +816,19 @@ def generate_report(payload, request):
 
         pdf_path = os.path.join(request.output_dir, request.file_stem + '.pdf')
         tex_path = os.path.join(request.output_dir, request.file_stem + '.tex')
+        generated_pdf = False
 
         # Write to temp dir first, compile there, then copy back
         with tempfile.TemporaryDirectory() as tmp_dir:
+
+            quantities = calculate_material_quantities(payload.inputs, payload.output_dict)
+            payload.inputs.update(quantities)
+            ur_chart = utilization_ratio_chart(payload.output_dict)
+            if ur_chart:
+                payload.figure_data["utilization_ratios"] = ur_chart
+            material_chart = material_quantity_chart(quantities)
+            if material_chart:
+                payload.figure_data["material_quantities"] = material_chart
 
             # ── Write figure bytes into tmp_dir/images/ then free RAM immediately ──
             tmp_images = os.path.join(tmp_dir, 'images')
@@ -895,10 +861,6 @@ def generate_report(payload, request):
                 shutil.copy2(org_logo_src, os.path.join(tmp_assets, 'org_logo.png'))
                 org_logo_latex = 'assets/org_logo.png'
 
-            # Compute and inject quantities for Chapter 7
-            quantities = calculate_material_quantities(payload.inputs, payload.output_dict)
-            payload.inputs.update(quantities)
-
             # ── Assemble LaTeX document (fig_paths now has tmp_dir paths) ──
             bridge = ReportDataBridge(payload.output_dict, payload.inputs, payload)
             span_m = float(payload.inputs.get(KEY_SPAN, 0) or 0)
@@ -924,11 +886,11 @@ def generate_report(payload, request):
             if 'analysis' in secs:
                 doc_parts.append(ch4_analysis(payload.analysis_summary, fig_paths, bridge, span_m))
             if 'design_checks' in secs:
-                doc_parts.append(ch5_design_checks(payload.design_checks, bridge))
+                doc_parts.append(ch5_design_checks(payload.design_checks, bridge, fig_paths))
             if 'drawings' in secs and payload.options.include_figures:
                 doc_parts.append(ch6_drawings(fig_paths))
 
-            doc_parts.append(ch7_quantities(payload.inputs))
+            doc_parts.append(ch7_quantities(payload.inputs, fig_paths))
 
             mode = str(payload.inputs.get(KEY_DESIGN_MODE, "Optimized")).strip().lower()
             is_custom = mode in {"custom", "customized"}
@@ -940,12 +902,7 @@ def generate_report(payload, request):
             doc_parts.append(r"\end{document}")
 
             full_tex = "\n".join(doc_parts)
-
-
-            # NOTE: longtable header repetition is handled per-table in each
-            # chapter file (e.g. \endfirsthead / \endhead).  No automatic
-            # post-processing is applied here to avoid mis-ordering captions
-            # and column headings.
+            full_tex = repeat_longtable_headers(full_tex)
 
             tmp_tex = os.path.join(tmp_dir, request.file_stem + '.tex')
             tmp_pdf = os.path.join(tmp_dir, request.file_stem + '.pdf')
@@ -953,8 +910,12 @@ def generate_report(payload, request):
             with open(tmp_tex, 'w', encoding='utf-8') as f:
                 f.write(full_tex)
 
-            # Compile twice for TOC and references
-            for _ in range(2):
+            # Repeat compilation until aux references and generated lists stabilize.
+            compile_failed = False
+            previous_reference_state = None
+            references_stable = False
+            reference_extensions = ('.aux', '.toc', '.lof', '.lot')
+            for _ in range(5):
                 try:
                     kwargs = {
                         'cwd': tmp_dir,
@@ -971,14 +932,52 @@ def generate_report(payload, request):
                         **kwargs
                     )
                 except Exception as exc:
-                    logger.warning(f"pdflatex run failed: {exc}")
+                    logger.error("pdflatex run failed: %s", exc)
+                    compile_failed = True
+                    break
+
+                if res.returncode != 0:
+                    logger.error("pdflatex exited with status %s.", res.returncode)
+                    logger.error("pdflatex STDOUT:\n%s", res.stdout.decode('utf-8', 'ignore'))
+                    logger.error("pdflatex STDERR:\n%s", res.stderr.decode('utf-8', 'ignore'))
+                    compile_failed = True
+                    break
+
+                reference_state = []
+                for extension in reference_extensions:
+                    reference_path = os.path.join(
+                        tmp_dir, request.file_stem + extension
+                    )
+                    try:
+                        with open(reference_path, 'rb') as reference_file:
+                            reference_state.append(reference_file.read())
+                    except FileNotFoundError:
+                        reference_state.append(None)
+                reference_state = tuple(reference_state)
+                if (
+                    previous_reference_state is not None
+                    and reference_state == previous_reference_state
+                ):
+                    references_stable = True
+                    break
+                previous_reference_state = reference_state
+
+            if not compile_failed and not references_stable:
+                logger.error(
+                    "LaTeX references did not stabilize after five compilation passes."
+                )
+                compile_failed = True
 
             if os.path.exists(tmp_tex):
                 shutil.copy2(tmp_tex, tex_path)
-            if os.path.exists(tmp_pdf):
+            if not compile_failed and os.path.exists(tmp_pdf):
                 shutil.copy2(tmp_pdf, pdf_path)
+                generated_pdf = True
 
         if os.path.exists(pdf_path):
+            if not generated_pdf:
+                logger.error("No new PDF was produced; an existing output file was left untouched.")
+                return ReportResult(pdf_path=None, tex_path=tex_path)
             logger.info("Report generated: %s", pdf_path)
             return ReportResult(pdf_path=pdf_path, tex_path=tex_path)
 

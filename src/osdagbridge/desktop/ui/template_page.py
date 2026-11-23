@@ -1341,6 +1341,20 @@ class CustomWindow(QWidget):
 
             backend = self.backend
 
+            input_dock = getattr(self, "input_dock", None)
+            if (
+                input_dock is None
+                or not getattr(input_dock, "is_locked", False)
+                or not getattr(backend, "input_dict", None)
+                or not getattr(backend, "output_dict", None)
+            ):
+                CustomMessageBox(
+                    title="Run Design",
+                    text="Please run the design first.",
+                    dialogType=MessageBoxType.Warning,
+                ).exec()
+                return
+
             # ── Run in background thread ──────────────────
             class _ReportWorker(QObject):
                 finished = Signal(object)
@@ -1484,6 +1498,15 @@ class CustomWindow(QWidget):
                 ).exec()
             except Exception:
                 pass
+
+    def _on_create_report_menu(self):
+        """File-menu handler for Create Design Report.
+        Routes through OutputDock._on_report_clicked if available to ensure
+        design checks and CAD figure captures are performed."""
+        if getattr(self, "output_dock", None) is not None:
+            self.output_dock._on_report_clicked()
+        else:
+            self.open_report_dialog()
 
     # ── End Report Generation ─────────────────────────────────────────────────
 
@@ -1759,7 +1782,7 @@ class CustomWindow(QWidget):
 
         create_report_action = QAction("Create Design Report", self)
         create_report_action.setShortcut(QKeySequence("Alt+C"))
-        create_report_action.triggered.connect(lambda _: self.open_report_dialog())
+        create_report_action.triggered.connect(lambda _: self._on_create_report_menu())
         file_menu.addAction(create_report_action)
 
         file_menu.addSeparator()

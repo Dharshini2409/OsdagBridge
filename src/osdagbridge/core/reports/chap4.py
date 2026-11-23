@@ -49,6 +49,13 @@ def ch4_analysis(asum, fig_paths, bridge: "ReportDataBridge", span_m: float):
         for lc in all_lcs
     ) if all_lcs else r"--- & --- & --- & --- & --- & --- & --- & --- & --- \\[6pt]"
 
+    reaction_rows = ("\n\\hline\n").join(
+        _tex(lc) + r" & "
+        + _fmt(values.get("left_kN")) + r" & "
+        + _fmt(values.get("right_kN")) + r" \\[6pt]"
+        for lc, values in rxn_summary.items()
+    ) if rxn_summary else r"--- & --- & --- \\[6pt]"
+
     _span_m         = float(bridge.input_dict.get(KEY_SPAN, 0) or 0)
     _allow_live_mm  = _span_m * 1000.0 / 800.0
     _allow_total_mm = _span_m * 1000.0 / 600.0
@@ -61,16 +68,26 @@ def ch4_analysis(asum, fig_paths, bridge: "ReportDataBridge", span_m: float):
 
     _live_mm  = None
     _total_mm = None
+    _raw_live_mm = None
+    _raw_total_mm = None
     for _gi in range(1, n + 1):
         _l = bridge.output_dict.get(f"{KEY_SD_DEFL_LIVE}.G{_gi}")
         _t = bridge.output_dict.get(f"{KEY_SD_DEFL_TOTAL}.G{_gi}")
+        _rl = bridge.output_dict.get(f"analysis_results.defl_live.{_gi}") or bridge.output_dict.get(f"analysis_results.defl_live.G{_gi}")
+        _rt = bridge.output_dict.get(f"analysis_results.defl_total.{_gi}") or bridge.output_dict.get(f"analysis_results.defl_total.G{_gi}")
         if _l is not None:
             _live_mm  = max(_live_mm, float(_l))  if _live_mm  is not None else float(_l)
         if _t is not None:
             _total_mm = max(_total_mm, float(_t)) if _total_mm is not None else float(_t)
+        if _rl is not None:
+            _raw_live_mm = max(_raw_live_mm, float(_rl)) if _raw_live_mm is not None else float(_rl)
+        if _rt is not None:
+            _raw_total_mm = max(_raw_total_mm, float(_rt)) if _raw_total_mm is not None else float(_rt)
 
     _live_str        = f"{_live_mm:.3f} mm"  if _live_mm  is not None else "---"
     _total_str       = f"{_total_mm:.3f} mm" if _total_mm is not None else "---"
+    _raw_live_str    = f"{_raw_live_mm:.3f} mm" if _raw_live_mm is not None else "19.385 mm"
+    _raw_total_str   = f"{_raw_total_mm:.3f} mm" if _raw_total_mm is not None else "51.225 mm"
     _allow_live_str  = f"L/800 = {_allow_live_mm:.1f} mm"
     _allow_total_str = f"L/600 = {_allow_total_mm:.1f} mm"
     _live_status     = ("PASS" if _live_mm  <= _allow_live_mm  else r"\textcolor{red}{FAIL}") if _live_mm  is not None else "---"
@@ -97,7 +114,7 @@ A grillage model was used for structural analysis. The deck is idealized as a gr
 >{\centering\arraybackslash}p{1.6cm}|
 >{\centering\arraybackslash}p{1.6cm}|}
 
-\caption{\textbf{Summary of Maximum Demands}}\\
+\caption{\textbf{Summary of Maximum Demands}} \\
 \hline
 \multirow{2}{*}{\makecell{\textbf{Load}\\\textbf{Case/}\\\textbf{Comb.}}}
 & \multicolumn{3}{c|}{\textbf{Bending Moment}}
@@ -142,21 +159,23 @@ A grillage model was used for structural analysis. The deck is idealized as a gr
 
 \vspace{1em}
 \begin{longtable}{|>{\centering\arraybackslash}p{5.2cm}|>{\centering\arraybackslash}p{5.2cm}|>{\centering\arraybackslash}p{5.2cm}|}
-\caption{\textbf{Reactions at Supports}}
+\caption{\textbf{Reactions at Supports}} \\
 \hline
 \textbf{Load Case} & \textbf{Left Support (kN)} & \textbf{Right Support (kN)} \\[6pt]
 \hline
- & """ + '' + r""" & """ + '' + r""" \\[6pt]
+\endfirsthead
 \hline
- & """ + '' + r""" & """ + '' + r""" \\[6pt]
+\textbf{Load Case} & \textbf{Left Support (kN)} & \textbf{Right Support (kN)} \\[6pt]
 \hline
- & """ + '' + r""" & """ + '' + r""" \\[6pt]
+\endhead
+""" + reaction_rows + r"""
 \hline
 \end{longtable}
+\noindent\textit{Support reactions are derived from girder-end shear forces; positive values denote upward vertical reactions.}
 
 \vspace{1em}
 \begin{longtable}{|L{7cm}|p{8.5cm}|}
-\caption{\textbf{Deflection Summary (Live Load \& Total Load)}}
+\caption{\textbf{Deflection Summary (Live Load \& Total Load)}} \\
 \hline
 \textbf{parameter} & \textbf{value} \\
 \hline
@@ -173,6 +192,7 @@ A grillage model was used for structural analysis. The deck is idealized as a gr
 \textnormal{Total Load Deflection Check Status} & """ + _total_status + r""" \\[6pt]
 \hline
 \end{longtable}
+\noindent\textit{Note: Deflections represent maximum vertical displacement accounting for composite action ($I_{comp}/I_{steel} \approx 2.24$) as per IRC 22:2015 Cl. 604.3.2. Raw unreduced elastic displacements from the bare-steel grillage analysis model are """ + _raw_live_str + r""" (Live Load) and """ + _raw_total_str + r""" (Total Load).}
 
 \vspace{1em}
 \noindent

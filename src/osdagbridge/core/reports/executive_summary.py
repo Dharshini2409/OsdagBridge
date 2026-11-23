@@ -54,6 +54,12 @@ def _max_member_efficiency(pair_designs):
     return best
 
 
+def _status_from_ur(max_ur):
+    if max_ur is None:
+        return None
+    return "FAIL" if max_ur > 1.0 else "PASS"
+
+
 def executive_summary(input_dict, output_dict, fig_paths) -> str:
     plan_fig = _fig_or_placeholder(fig_paths.get('girder_top'), 'Figure 1 -- Overall Bridge Plan')
     cs_fig = _fig_or_placeholder(fig_paths.get('cross_section'),
@@ -102,25 +108,48 @@ def executive_summary(input_dict, output_dict, fig_paths) -> str:
                 if girder_max_ur is None or dcr > girder_max_ur:
                     girder_max_ur = dcr
 
-    if not per_girder:
-        overall_design_status = ""
-    elif failing:
-        overall_design_status = "Fail (" + ", ".join(failing) + ")"
-    else:
+    girder_checks_present = any(
+        gd.get("checks")
+        for g, gd in per_girder.items()
+        if not str(g).startswith("EB") and isinstance(gd, dict)
+    )
+    girder_status = (
+        "FAIL" if failing else _status_from_ur(girder_max_ur)
+    ) if girder_checks_present else None
+    deck_max = _max_float([v for k, v in deck_results.items() if str(k).startswith("ur_")])
+    cb_max = _max_member_efficiency(cb_results)
+    ed_max = _max_member_efficiency(ed_results)
+    component_results = (
+        ("Steel girders", girder_status, girder_max_ur),
+        ("Concrete deck slab", _status_from_ur(deck_max), deck_max),
+        ("Cross bracing", _status_from_ur(cb_max), cb_max),
+        ("End diaphragms", _status_from_ur(ed_max), ed_max),
+    )
+
+    overall_failures = list(failing)
+    for label, status, _ in component_results[1:]:
+        if status == "FAIL":
+            overall_failures.append(label)
+    if component_results[0][1] == "FAIL" and not overall_failures:
+        overall_failures.append("Steel girders")
+
+    statuses = [status for _, status, _ in component_results]
+    if overall_failures:
+        overall_design_status = "Fail (" + ", ".join(dict.fromkeys(overall_failures)) + ")"
+    elif statuses and all(status == "PASS" for status in statuses):
         overall_design_status = "Pass"
+    elif any(status is not None for status in statuses):
+        unavailable = [label for label, status, _ in component_results if status is None]
+        overall_design_status = "Incomplete (unavailable: " + ", ".join(unavailable) + ")"
+    else:
+        overall_design_status = "Not available"
 
     # Overall Utilization Ratio — the maximum UR across all bridge components,
     # tagged with the governing component (e.g. "1.05 (Deck slab)").
-    component_urs = []                  # (ur_value, component_label)
-    if girder_max_ur is not None:
-        component_urs.append((girder_max_ur, "Girder"))
-    deck_max = _max_float([v for k, v in deck_results.items() if str(k).startswith("ur_")])
-    if deck_max is not None:
-        component_urs.append((deck_max, "Deck slab"))
-    for results, label in ((cb_results, "Cross bracing"), (ed_results, "End diaphragm")):
-        m = _max_member_efficiency(results)
-        if m is not None:
-            component_urs.append((m, label))
+    component_urs = []
+    for label, _, max_ur in component_results:
+        if max_ur is not None:
+            component_urs.append((max_ur, label))
     if component_urs:
         max_ur, max_label = max(component_urs, key=lambda t: t[0])
         overall_utilization_ratio = f"{max_ur:.2f} ({max_label})"
@@ -129,6 +158,26 @@ def executive_summary(input_dict, output_dict, fig_paths) -> str:
 
     gov = _tex(gov_name) if gov_name not in (None, '', 'None') else ''
     ur = _tex(overall_utilization_ratio) if overall_utilization_ratio else ''
+
+    def _outcome(status, max_ur, details=()):
+        if status is None:
+            return "Not available (no numeric design result)"
+        if status == "FAIL":
+            reason = ", ".join(details) if details else (
+                f"max UR = {max_ur:.2f}" if max_ur is not None else "check failed"
+            )
+            return r"\textcolor{red}{FAIL} (" + _tex(reason) + ")"
+        suffix = f" (max UR = {max_ur:.2f})" if max_ur is not None else ""
+        return "PASS" + suffix
+
+    outcome_lines = []
+    for label, status, max_ur in component_results:
+        details = failing if label == "Steel girders" else ()
+        outcome_lines.append(
+            r"\noindent\textbf{" + _tex(label) + r":} "
+            + _outcome(status, max_ur, details) + r" \\"
+        )
+    outcomes = "\n".join(outcome_lines)
 
     # --- Dynamic Table 1: fetch backend-populated labels via exact suffix pattern ---
     # defaults.py populates: KEY_MP_GD_SELECT_GIRDER + '.G{i}' = 'G{i}'
@@ -230,10 +279,7 @@ This section provides a concise summary of the bridge design, key inputs, govern
 \addcontentsline{toc}{section}{Key Design Outcomes Summary}
 \label{sec:key-outcomes}
 
-\noindent Girder design pass \\
-Cross bracing design pass \\
-End Diaphragm design pass \\
-Deck design pass
+""" + outcomes + r"""
 
 \section*{Design Assumptions and Limitations}
 \addcontentsline{toc}{section}{Design Assumptions and Limitations}

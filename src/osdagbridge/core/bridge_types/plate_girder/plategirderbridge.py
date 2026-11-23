@@ -75,6 +75,8 @@ from osdagbridge.core.utils.common import (
     KEY_SL_DEAD_LOAD_MODE, KEY_SL_DEAD_LOAD_VALUE,
     KEY_SL_LIVE_LOAD_MODE, KEY_SL_LIVE_LOAD_VALUE,
     KEY_SL_HORIZONTAL_COEFF, KEY_SL_VERTICAL_COEFF,
+    KEY_EL_LONGITUDINAL_SEISMIC_FORCE,
+    KEY_EL_TRANSVERSE_SEISMIC_FORCE,
     KEY_MD_WIDTH,
     KEY_RL_WIDTH,
     KEY_TS_DECK_OVERHANG,
@@ -86,6 +88,9 @@ from osdagbridge.core.utils.common import (
     KEY_TS_NO_OF_FOOTPATHS,
     KEY_WC_THICKNESS,
     KEY_WC_DENSITY,
+    KEY_WL_TRANSVERSE_WIND_FORCE,
+    KEY_WL_LONGITUDINAL_WIND_FORCE,
+    KEY_WL_VERTICAL_WIND_FORCE,
     KEY_MP_GIRDER_SYMMETRY, KEY_MP_GIRDER_DEPTH, KEY_MP_GIRDER_WEB_DEPTH, KEY_MP_GIRDER_WEB_THICKNESS,
     KEY_MP_GIRDER_TOP_FLANGE_WIDTH, KEY_MP_GIRDER_TOP_FLANGE_THICKNESS,
     KEY_MP_GIRDER_BOTTOM_FLANGE_WIDTH, KEY_MP_GIRDER_BOTTOM_FLANGE_THICKNESS,
@@ -779,10 +784,16 @@ class PlateGirderBridge:
             for _gi, _vals in (self._deflections_cache or {}).items():
                 _live = _vals.get("live_mm")
                 _total = _vals.get("total_mm")
+                _raw_live = _vals.get("live_grillage_mm")
+                _raw_total = _vals.get("total_grillage_mm")
                 if _live is not None:
                     self.output_dict[f"{KEY_SD_DEFL_LIVE}.{_gi}"] = round(float(_live), 3)
                 if _total is not None:
                     self.output_dict[f"{KEY_SD_DEFL_TOTAL}.{_gi}"] = round(float(_total), 3)
+                if _raw_live is not None:
+                    self.output_dict[f"analysis_results.defl_live.{_gi}"] = round(float(_raw_live), 3)
+                if _raw_total is not None:
+                    self.output_dict[f"analysis_results.defl_total.{_gi}"] = round(float(_raw_total), 3)
             
             # Stage 8: 3D CAD & Drawing Generation
             self._run_stage("8", self._stage_cad_generation)
@@ -969,6 +980,12 @@ class PlateGirderBridge:
     def generate_design_report(self, request, cad_generator, is_preview=False):
         """Compile the final PDF design report."""
         from osdagbridge.core.reports.report_generator import build_report_payload, generate_report
+
+        if not self.input_dict or not self.output_dict:
+            raise ValueError(
+                "Cannot generate design report: bridge inputs or design results are empty. "
+                "Please run the bridge design first."
+            )
 
         report_inputs = self.input_dict.copy()
         output_dict   = dict(self.output_dict)  # MappingProxyType → dict
@@ -1355,6 +1372,8 @@ class PlateGirderBridge:
         bridge_logger.check_cancel()
         
         model.create_moving_vehicle_load_cases()
+        class_fatigue_enabled = model.is_fatigue_vehicle_enabled(self.input_dict)
+        model.create_fatigue_moving_load_case(enabled=class_fatigue_enabled)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Wind loads — applied after dead and live loads, before analysis
@@ -1401,7 +1420,7 @@ class PlateGirderBridge:
         )
         c_spacing = inp[KEY_TS_GIRDER_SPACING]
 
-        self.grillage_model.create_wind_load(
+        wind_load_results = self.grillage_model.create_wind_load(
             railing_height=railing_height,
             crash_barrier_height=crash_barrier_height,
             deck_thickness=deck_t_m,
@@ -1414,6 +1433,9 @@ class PlateGirderBridge:
             d_depth=d_depth,
             partial_safety_factor=1.0,
         )
+        self.input_dict[KEY_WL_TRANSVERSE_WIND_FORCE] = wind_load_results[KEY_WL_TRANSVERSE_WIND_FORCE]
+        self.input_dict[KEY_WL_LONGITUDINAL_WIND_FORCE] = wind_load_results[KEY_WL_LONGITUDINAL_WIND_FORCE]
+        self.input_dict[KEY_WL_VERTICAL_WIND_FORCE] = wind_load_results[KEY_WL_VERTICAL_WIND_FORCE]
 
     # ============================================================
     #   Temperature Load Analysis  IRC:6-2017 Cl.215
@@ -1960,7 +1982,7 @@ class PlateGirderBridge:
         dead_load_kN = _custom_load(KEY_SL_DEAD_LOAD_MODE, KEY_SL_DEAD_LOAD_VALUE)
         live_load_kN = _custom_load(KEY_SL_LIVE_LOAD_MODE, KEY_SL_LIVE_LOAD_VALUE)
 
-        self.grillage_model.create_seismic_load_cases(
+        seismic_load_results = self.grillage_model.create_seismic_load_cases(
             z_value=z_value,
             soil_type=soil_type,
             importance_factor=importance_factor,
@@ -1973,6 +1995,8 @@ class PlateGirderBridge:
             live_load_kN=live_load_kN,
             partial_safety_factor=1.5,  # IRC:6-2017 Table B.2 seismic ULS
         )
+        self.input_dict[KEY_EL_LONGITUDINAL_SEISMIC_FORCE] = seismic_load_results[KEY_EL_LONGITUDINAL_SEISMIC_FORCE]
+        self.input_dict[KEY_EL_TRANSVERSE_SEISMIC_FORCE] = seismic_load_results[KEY_EL_TRANSVERSE_SEISMIC_FORCE]
 
     def vehicle_lane_coordinates(self) -> list:
         """
@@ -3293,8 +3317,11 @@ class PlateGirderBridge:
             bridge=self.grillage_model,
             edge_dist=edge_dist,
         )
+        sr = 1.0
+        if hasattr(self, "design_results") and isinstance(self.design_results, dict):
+            sr = float(self.design_results.get("stiffness_ratio") or 1.0)
         self._load_effects_cache = build_load_effects_cache(rh)
-        self._deflections_cache  = build_deflections_cache(rh)
+        self._deflections_cache  = build_deflections_cache(rh, stiffness_ratio=sr)
         ch4 = build_forces_summary(rh, self._load_effects_cache)
         self._lc_summary       = ch4["load_cases"]
         self._reaction_summary= ch4["reactions"]

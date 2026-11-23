@@ -1,9 +1,60 @@
+import re
+
 from osdagbridge.core.utils.common import (
     KEY_MP_GD_MEMBER_ID,
     KEY_MP_GD_SELECT_GIRDER,
     KEY_MP_GIRDER_DEPTH,
     KEY_TS_NO_OF_GIRDERS
 )
+
+
+_LONGTABLE_PATTERN = re.compile(
+    r"\\begin\{longtable\}.*?\\end\{longtable\}", re.DOTALL
+)
+
+
+def repeat_longtable_headers(latex):
+    """Add the first-page column header to each longtable continuation head."""
+    def repeat_header(match):
+        table = match.group(0)
+        first_head = table.find(r"\endfirsthead")
+        end_head = table.find(r"\endhead")
+        if (first_head < 0) != (end_head < 0):
+            raise ValueError("Longtable has an incomplete continuation header.")
+
+        header_limit = first_head if first_head >= 0 else len(table)
+        first_rule = table.find(r"\hline")
+        second_rule = table.find(r"\hline", first_rule + len(r"\hline"))
+        if first_rule < 0 or second_rule < 0 or second_rule >= header_limit:
+            raise ValueError("Longtable is missing a recognizable column header.")
+
+        header = table[first_rule:second_rule + len(r"\hline")]
+        if not re.search(r"\\textbf\s*\{", header):
+            raise ValueError("Longtable column header must contain bold labels.")
+
+        if first_head >= 0:
+            repeated_header = table[first_head + len(r"\endfirsthead"):end_head]
+            if re.search(r"\\textbf\s*\{", repeated_header):
+                return table
+            insertion = first_head + len(r"\endfirsthead")
+            return (
+                table[:insertion]
+                + "\n\n"
+                + header
+                + "\n\n"
+                + table[insertion:]
+            )
+
+        insertion = second_rule + len(r"\hline")
+        return (
+            table[:insertion]
+            + "\n\\endfirsthead\n\n"
+            + header
+            + "\n\\endhead\n"
+            + table[insertion:]
+        )
+
+    return _LONGTABLE_PATTERN.sub(repeat_header, latex)
 
 
 def _tex(value):
@@ -22,6 +73,7 @@ def _tex(value):
                     ('~', r'\textasciitilde{}'), ('^', r'\^{}')]:
         s = s.replace(ch, esc)
     s = s.replace(':', r':\allowbreak{}')
+    s = s.replace('≤', r'\ensuremath{\leq}')
     return s
 
 
@@ -74,7 +126,7 @@ def get_girder_entries(input_dict):
 
 
 def _fig_or_placeholder(path, caption, width=r'0.9\textwidth'):
-    """Embed figure if path is provided (file already copied to assets), else show placeholder box.
+    """Embed a figure or clearly identify the missing source image.
     path is the relative path as pdflatex will see it (e.g. 'assets/plan.png').
     """
     if path:
@@ -87,13 +139,13 @@ def _fig_or_placeholder(path, caption, width=r'0.9\textwidth'):
     return (r'\begin{figure}[H]' + '\n'
             r'\centering' + '\n'
             r'\fbox{\parbox{0.97\textwidth}{' + '\n'
-            r'\textit{[ PLACEHOLDER: ' + caption + r' ]}' + '\n'
+            r'\textit{Source image unavailable for this report: ' + caption + r'}' + '\n'
             r'}}' + '\n'
             r'\caption*{' + caption + '}\n'
             r'\end{figure}')
 
 def _fig_embed(path, caption, width=r'\textwidth', height=None):
-    """Embed a real figure when path is provided (already copied); otherwise use an fbox placeholder."""
+    """Embed a real figure or clearly identify the missing source image."""
     if path:
         p = path.replace('\\', '/')
         opts = 'width=' + width
@@ -107,9 +159,8 @@ def _fig_embed(path, caption, width=r'\textwidth', height=None):
                 r'\caption*{\small ' + caption + '}\n'
                 r'\vspace{-0.5em}' + '\n'
                 r'\end{figure}')
-    # fbox placeholder — matches template exactly
     return (r'\noindent\fbox{\parbox{0.97\textwidth}{' + '\n'
-            r'\textit{[ PLACEHOLDER: ' + caption + r' ]}' + '\n'
+            r'\textit{Analysis figure unavailable for this report: ' + caption + r'}' + '\n'
             r'}}')
 
 

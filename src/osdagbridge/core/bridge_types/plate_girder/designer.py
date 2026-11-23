@@ -3387,6 +3387,7 @@ def run_design_check(
     _sec = config.section
     _mat = config.material
     _geo = config.geometry
+    _stiffness_ratio = max(float(capacity.I_comp_short_mm4) / float(_sec.Iz_steel), 1.0) if float(_sec.Iz_steel) > 0 else 1.0
     design_results = {
         # -- bridge configuration --
         "span_m"                    : _geo.span,
@@ -3441,6 +3442,7 @@ def run_design_check(
         "M_construction_kNm"        : demand.M_construction_kNm,
         "delta_live_mm"             : demand.delta_live_mm,
         "delta_total_mm"            : demand.delta_total_mm,
+        "stiffness_ratio"           : _stiffness_ratio,
         "stress_range_MPa"          : demand.stress_range_MPa,
         "shear_range_MPa"           : demand.shear_range_MPa,
         "Nsc"                       : demand.Nsc,

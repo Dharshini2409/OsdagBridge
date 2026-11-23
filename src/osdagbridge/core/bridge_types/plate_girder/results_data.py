@@ -765,11 +765,16 @@ def build_load_effects_cache(result_handler) -> dict:
     return cache
 
 
-def build_deflections_cache(result_handler) -> dict:
+def build_deflections_cache(result_handler, stiffness_ratio: float = 1.0) -> dict:
     """
     Pre-compute maximum vertical (y) deflection per girder for:
       - live load only  (load case "1.0 LL")
       - total load      (load case "1.0 DL + 1.0 LL")
+
+    When stiffness_ratio > 1.0 (composite bridge), deflections under serviceability
+    are converted to the composite section stiffness (IRC 22:2015 Cl. 604.3.2).
+    Both composite ('live_mm', 'total_mm') and unreduced grillage analysis
+    ('live_grillage_mm', 'total_grillage_mm') deflections are stored in the cache.
 
     Returns::
 
@@ -821,15 +826,20 @@ def build_deflections_cache(result_handler) -> dict:
 
     cache: dict = {}
     gi = 1
+    sr = max(float(stiffness_ratio or 1.0), 1.0)
     for girder, gdata in g_map.items():
         if girder.startswith("EB"):
             continue
         girder_label = f"G{gi}"
         gi += 1
         nodes = gdata.get("path", [])
+        raw_live = _max_defl_mm(ll_case, nodes)
+        raw_total = _max_defl_mm(dl_ll_case, nodes)
         cache[girder_label] = {
-            "live_mm":  _max_defl_mm(ll_case,    nodes),
-            "total_mm": _max_defl_mm(dl_ll_case, nodes),
+            "live_mm": round(raw_live / sr, 3) if raw_live is not None else None,
+            "total_mm": round(raw_total / sr, 3) if raw_total is not None else None,
+            "live_grillage_mm": raw_live,
+            "total_grillage_mm": raw_total,
         }
 
     return cache
@@ -951,27 +961,14 @@ def build_forces_summary(result_handler, load_effects_cache: dict) -> dict:
             "sf_location": sf_location,
         }
 
-        # ── 3. Reactions — sum Ra and Rb across all interior girders ──
-        left_total  = 0.0
-        right_total = 0.0
-
-        for gmap_key in cache_label_to_gmap_key.values():
-            element_map = g_map[gmap_key].get("element_map", [])
-            if not element_map:
-                continue
-            eid_start, n1_start, _ = element_map[0]
-            eid_end,   _,  n2_end  = element_map[-1]
-            try:
-                ra = float(ds.sel(
-                    Loadcase=lc, Element=eid_start, Component="Vy_i"
-                )["forces"]) / 1000.0
-                rb = -float(ds.sel(
-                    Loadcase=lc, Element=eid_end, Component="Vy_j"
-                )["forces"]) / 1000.0
-                left_total  += ra
-                right_total += rb
-            except Exception:
-                pass
+        # OSPGrillage exports no nodal reaction variable; derive support
+        # reactions from beam-end forces using the topology-aware extractor.
+        reaction_df = result_handler._get_reactions_df(lc)
+        if reaction_df.empty:
+            left_total = right_total = 0.0
+        else:
+            left_total = float(reaction_df["Ra (kN)"].sum())
+            right_total = float(reaction_df["Rb (kN)"].sum())
 
         rxn_summary[lc] = {
             "left_kN":  round(left_total,  3),
